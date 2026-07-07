@@ -28,6 +28,10 @@ CITIES = [
     {"name": "Thiruvananthapuram", "waqi_name": "trivandrum",     "lat": 8.5241,  "lon": 76.9366},
     {"name": "Kochi",              "waqi_name": "ernakulam",      "lat": 9.9312,  "lon": 76.2673},
     {"name": "Hyderabad",          "waqi_name": "hyderabad",      "lat": 17.3850, "lon": 78.4867},
+    {"name": "Mysuru",             "waqi_name": "india/mysuru/hebbal-1st-stage", "lat": 12.2958, "lon": 76.6394},
+    {"name": "Visakhapatnam",      "waqi_name": "india/visakhapatnam/gvm-corporation", "lat": 17.72,   "lon": 83.3},
+    {"name": "Vijayawada",         "waqi_name": "vijayawada",     "lat": 16.5062, "lon": 80.6480},
+
     # International
     {"name": "London",             "waqi_name": "london",         "lat": 51.5074, "lon": -0.1278},
     {"name": "Dubai",              "waqi_name": "dubai",          "lat": 25.2048, "lon": 55.2708},
