@@ -1,3 +1,5 @@
+
+import os
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
@@ -17,7 +19,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-WAQI_TOKEN = "38ff078575cd26fe4e75dc2fbd0e790e446a0ee9"
+WAQI_TOKEN = os.environ.get("WAQI_TOKEN")
 
 CITIES = [
     # South India
