@@ -80,6 +80,23 @@ def get_humidity_condition(humidity):
     else:
         return "Very Humid 🔴"
 
+def search_city_waqi(city_name):
+    try:
+        url = f"https://api.waqi.info/search/?token={WAQI_TOKEN}&keyword={city_name}"
+        response = requests.get(url, timeout=5)
+        data = response.json()
+        if data["status"] == "ok" and len(data["data"]) > 0:
+            station = data["data"][0]
+            return {
+                "name": station["station"]["name"],
+                "lat": station["station"]["geo"][0],
+                "lon": station["station"]["geo"][1],
+                "aqi": station["aqi"],
+            }
+        return None
+    except Exception as e:
+        return None
+
 def fetch_aqi_waqi(waqi_name):
     try:
         url      = f"https://api.waqi.info/feed/{waqi_name}/?token={WAQI_TOKEN}"
@@ -192,7 +209,35 @@ def get_city_pollution(city_name: str):
                     "wind_speed"         : wind
                 }
             }
-    return {"error": f"City '{city_name}' not found"}
+        # City not in our fixed list — search WAQI directly
+        result = search_city_waqi(city_name)
+        if result:
+            aqi_value = None
+            aqi_condition = "No data ⚪"
+            if result["aqi"] not in ("-", None):
+                try:
+                    aqi_value = int(result["aqi"])
+                    aqi_condition = get_aqi_condition(aqi_value)
+                except ValueError:
+                    pass
+
+            temp, wind, humidity = fetch_weather(result["lat"], result["lon"])
+            return {
+                "city": result["name"],
+                "aqi": {
+                    "value": aqi_value,
+                    "condition": aqi_condition,
+                },
+                "weather": {
+                    "temperature": temp,
+                    "temp_condition": get_temp_condition(temp) if temp else None,
+                    "humidity": humidity,
+                    "humidity_condition": get_humidity_condition(humidity) if humidity else None,
+                    "wind_speed": wind
+                }
+            }
+
+        return {"error": f"City '{city_name}' not found"}
 
 @app.get("/test-weather")
 
