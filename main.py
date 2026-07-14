@@ -80,6 +80,19 @@ def get_humidity_condition(humidity):
     else:
         return "Very Humid 🔴"
 
+def reverse_geocode(lat, lon):
+    try:
+        url = (
+            f"https://api.bigdatacloud.net/data/reverse-geocode-client"
+            f"?latitude={lat}&longitude={lon}&localityLanguage=en"
+        )
+        response = requests.get(url, timeout=5)
+        data = response.json()
+        city = data.get("city") or data.get("locality")
+        return city
+    except Exception as e:
+        return None
+
 def search_city_waqi(city_name):
     try:
         url = f"https://api.waqi.info/search/?token={WAQI_TOKEN}&keyword={city_name}"
@@ -188,6 +201,41 @@ def get_all_pollution():
         "source"    : "WAQI + Open-Meteo",
         "cities"    : results
     }
+
+@app.get("/pollution-by-coords")
+def get_pollution_by_coords(lat: float, lon: float):
+    city_name = reverse_geocode(lat, lon)
+    if not city_name:
+        return {"error": "Could not determine city from location"}
+
+    result = search_city_waqi(city_name)
+    if result:
+        aqi_value = None
+        aqi_condition = "No data ⚪"
+        if result["aqi"] not in ("-", None):
+            try:
+                aqi_value = int(result["aqi"])
+                aqi_condition = get_aqi_condition(aqi_value)
+            except ValueError:
+                pass
+
+        temp, wind, humidity = fetch_weather(lat, lon)
+        return {
+            "city": city_name,
+            "aqi": {
+                "value": aqi_value,
+                "condition": aqi_condition,
+            },
+            "weather": {
+                "temperature": temp,
+                "temp_condition": get_temp_condition(temp) if temp else None,
+                "humidity": humidity,
+                "humidity_condition": get_humidity_condition(humidity) if humidity else None,
+                "wind_speed": wind
+            }
+        }
+
+    return {"error": f"No station found for {city_name}"}
 
 @app.get("/pollution/{city_name}")
 def get_city_pollution(city_name: str):
