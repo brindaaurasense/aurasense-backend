@@ -239,6 +239,7 @@ def get_pollution_by_coords(lat: float, lon: float):
 
 @app.get("/pollution/{city_name}")
 def get_city_pollution(city_name: str):
+    # Step 1: Check our fixed list first
     for city in CITIES:
         if city_name.lower() in city["name"].lower():
             aqi_value, aqi_condition = fetch_aqi_waqi(city["waqi_name"])
@@ -257,35 +258,38 @@ def get_city_pollution(city_name: str):
                     "wind_speed"         : wind
                 }
             }
-        # City not in our fixed list — search WAQI directly
-        result = search_city_waqi(city_name)
-        if result:
-            aqi_value = None
-            aqi_condition = "No data ⚪"
-            if result["aqi"] not in ("-", None):
-                try:
-                    aqi_value = int(result["aqi"])
-                    aqi_condition = get_aqi_condition(aqi_value)
-                except ValueError:
-                    pass
 
-            temp, wind, humidity = fetch_weather(result["lat"], result["lon"])
-            return {
-                "city": result["name"],
-                "aqi": {
-                    "value": aqi_value,
-                    "condition": aqi_condition,
-                },
-                "weather": {
-                    "temperature": temp,
-                    "temp_condition": get_temp_condition(temp) if temp else None,
-                    "humidity": humidity,
-                    "humidity_condition": get_humidity_condition(humidity) if humidity else None,
-                    "wind_speed": wind
-                }
+    # Step 2: Not found in our list — NOW try the backup WAQI search
+    # (this runs only ONCE, after checking every city in the list)
+    result = search_city_waqi(city_name)
+    if result:
+        aqi_value = None
+        aqi_condition = "No data ⚪"
+        if result["aqi"] not in ("-", None):
+            try:
+                aqi_value = int(result["aqi"])
+                aqi_condition = get_aqi_condition(aqi_value)
+            except ValueError:
+                pass
+
+        temp, wind, humidity = fetch_weather(result["lat"], result["lon"])
+        return {
+            "city": result["name"],
+            "aqi": {
+                "value": aqi_value,
+                "condition": aqi_condition,
+            },
+            "weather": {
+                "temperature": temp,
+                "temp_condition": get_temp_condition(temp) if temp else None,
+                "humidity": humidity,
+                "humidity_condition": get_humidity_condition(humidity) if humidity else None,
+                "wind_speed": wind
             }
+        }
 
-        return {"error": f"City '{city_name}' not found"}
+    # Step 3: Truly nothing found anywhere
+    return {"error": f"City '{city_name}' not found"}
 
 @app.get("/test-weather")
 
