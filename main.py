@@ -5,6 +5,8 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from datetime import datetime
 import requests
+import httpx
+import asyncio
 
 app = FastAPI(
     title       = "AuraSense API",
@@ -80,23 +82,25 @@ def get_humidity_condition(humidity):
     else:
         return "Very Humid 🔴"
 
-def reverse_geocode(lat, lon):
+async def reverse_geocode(lat, lon):
     try:
         url = (
             f"https://api.bigdatacloud.net/data/reverse-geocode-client"
             f"?latitude={lat}&longitude={lon}&localityLanguage=en"
         )
-        response = requests.get(url, timeout=5)
+        async with httpx.AsyncClient() as client:
+            response = await client.get(url, timeout=5)
         data = response.json()
         city = data.get("city") or data.get("locality")
         return city
     except Exception as e:
         return None
 
-def search_city_waqi(city_name):
+async def search_city_waqi(city_name):
     try:
         url = f"https://api.waqi.info/search/?token={WAQI_TOKEN}&keyword={city_name}"
-        response = requests.get(url, timeout=5)
+        async with httpx.AsyncClient() as client:
+            response = await client.get(url, timeout=5)
         data = response.json()
         if data["status"] == "ok" and len(data["data"]) > 0:
             station = data["data"][0]
@@ -110,11 +114,12 @@ def search_city_waqi(city_name):
     except Exception as e:
         return None
 
-def fetch_aqi_waqi(waqi_name):
+async def fetch_aqi_waqi(waqi_name):
     try:
-        url      = f"https://api.waqi.info/feed/{waqi_name}/?token={WAQI_TOKEN}"
-        response = requests.get(url, timeout=5)
-        data     = response.json()
+        url = f"https://api.waqi.info/feed/{waqi_name}/?token={WAQI_TOKEN}"
+        async with httpx.AsyncClient() as client:
+            response = await client.get(url, timeout=5)
+        data = response.json()
         if data["status"] == "ok":
             raw_aqi = data["data"]["aqi"]
             if isinstance(raw_aqi, str) or raw_aqi == "-":
@@ -126,8 +131,7 @@ def fetch_aqi_waqi(waqi_name):
     except Exception as e:
         return None, "Timeout ⚪"
 
-
-def fetch_weather(lat, lon):
+async def fetch_weather(lat, lon):
     try:
         url = (
             f"https://api.open-meteo.com/v1/forecast"
@@ -135,7 +139,8 @@ def fetch_weather(lat, lon):
             f"&longitude={lon}"
             f"&current=temperature_2m,relative_humidity_2m,wind_speed_10m"
         )
-        response = requests.get(url, timeout=10)
+        async with httpx.AsyncClient() as client:
+            response = await client.get(url, timeout=10)
 
         # Check connection
         if response.status_code != 200:
@@ -175,12 +180,12 @@ def health_check():
     }
 
 @app.get("/pollution")
-def get_all_pollution():
+async def get_all_pollution():
     results   = []
     timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     for city in CITIES:
-        aqi_value, aqi_condition = fetch_aqi_waqi(city["waqi_name"])
-        temp, wind, humidity     = fetch_weather(city["lat"], city["lon"])
+        aqi_value, aqi_condition = await fetch_aqi_waqi(city["waqi_name"])
+        temp, wind, humidity     = await fetch_weather(city["lat"], city["lon"])
         city_data = {
             "city" : city["name"],
             "aqi"  : {
@@ -203,12 +208,18 @@ def get_all_pollution():
     }
 
 @app.get("/pollution-by-coords")
-def get_pollution_by_coords(lat: float, lon: float):
-    city_name = reverse_geocode(lat, lon)
+async def get_pollution_by_coords(lat: float, lon: float):
+    # Run reverse-geocoding and weather fetch AT THE SAME TIME,
+    # since weather doesn't need the city name
+    city_name, (temp, wind, humidity) = await asyncio.gather(
+        reverse_geocode(lat, lon),
+        fetch_weather(lat, lon)
+    )
+
     if not city_name:
         return {"error": "Could not determine city from location"}
 
-    result = search_city_waqi(city_name)
+    result = await search_city_waqi(city_name)
     if result:
         aqi_value = None
         aqi_condition = "No data ⚪"
@@ -219,7 +230,6 @@ def get_pollution_by_coords(lat: float, lon: float):
             except ValueError:
                 pass
 
-        temp, wind, humidity = fetch_weather(lat, lon)
         return {
             "city": city_name,
             "aqi": {
@@ -238,12 +248,12 @@ def get_pollution_by_coords(lat: float, lon: float):
     return {"error": f"No station found for {city_name}"}
 
 @app.get("/pollution/{city_name}")
-def get_city_pollution(city_name: str):
+async def get_city_pollution(city_name: str):
     # Step 1: Check our fixed list first
     for city in CITIES:
         if city_name.lower() in city["name"].lower():
-            aqi_value, aqi_condition = fetch_aqi_waqi(city["waqi_name"])
-            temp, wind, humidity     = fetch_weather(city["lat"], city["lon"])
+            aqi_value, aqi_condition = await fetch_aqi_waqi(city["waqi_name"])
+            temp, wind, humidity     = await fetch_weather(city["lat"], city["lon"])
             return {
                 "city" : city["name"],
                 "aqi"  : {
@@ -261,7 +271,7 @@ def get_city_pollution(city_name: str):
 
     # Step 2: Not found in our list — NOW try the backup WAQI search
     # (this runs only ONCE, after checking every city in the list)
-    result = search_city_waqi(city_name)
+    result = await search_city_waqi(city_name)
     if result:
         aqi_value = None
         aqi_condition = "No data ⚪"
@@ -272,7 +282,7 @@ def get_city_pollution(city_name: str):
             except ValueError:
                 pass
 
-        temp, wind, humidity = fetch_weather(result["lat"], result["lon"])
+        temp, wind, humidity = await fetch_weather(result["lat"], result["lon"])
         return {
             "city": result["name"],
             "aqi": {
