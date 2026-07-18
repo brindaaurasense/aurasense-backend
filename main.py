@@ -209,43 +209,54 @@ async def get_all_pollution():
 
 @app.get("/pollution-by-coords")
 async def get_pollution_by_coords(lat: float, lon: float):
-    # Run reverse-geocoding and weather fetch AT THE SAME TIME,
-    # since weather doesn't need the city name
-    city_name, (temp, wind, humidity) = await asyncio.gather(
-        reverse_geocode(lat, lon),
-        fetch_weather(lat, lon)
-    )
+    try:
+        # Run WAQI geo lookup and weather fetch AT THE SAME TIME
+        waqi_url = f"https://api.waqi.info/feed/geo:{lat};{lon}/?token={WAQI_TOKEN}"
 
-    if not city_name:
-        return {"error": "Could not determine city from location"}
+        async with httpx.AsyncClient() as client:
+            waqi_task    = client.get(waqi_url, timeout=10)
+            weather_task = fetch_weather(lat, lon)
 
-    result = await search_city_waqi(city_name)
-    if result:
-        aqi_value = None
-        aqi_condition = "No data ⚪"
-        if result["aqi"] not in ("-", None):
-            try:
-                aqi_value = int(result["aqi"])
-                aqi_condition = get_aqi_condition(aqi_value)
-            except ValueError:
-                pass
+            waqi_response, (temp, wind, humidity) = await asyncio.gather(
+                waqi_task,
+                weather_task
+            )
 
-        return {
-            "city": city_name,
-            "aqi": {
-                "value": aqi_value,
-                "condition": aqi_condition,
-            },
-            "weather": {
-                "temperature": temp,
-                "temp_condition": get_temp_condition(temp) if temp else None,
-                "humidity": humidity,
-                "humidity_condition": get_humidity_condition(humidity) if humidity else None,
-                "wind_speed": wind
+        data = waqi_response.json()
+
+        if data["status"] == "ok":
+            aqi_raw       = data["data"]["aqi"]
+            city          = data["data"]["city"]["name"]
+
+            aqi_value     = None
+            aqi_condition = "No data ⚪"
+
+            if aqi_raw not in ("-", None):
+                try:
+                    aqi_value     = int(aqi_raw)
+                    aqi_condition = get_aqi_condition(aqi_value)
+                except (ValueError, TypeError):
+                    pass
+
+            return {
+                "city"    : city,
+                "aqi"     : {
+                    "value"     : aqi_value,
+                    "condition" : aqi_condition,
+                },
+                "weather" : {
+                    "temperature"        : temp,
+                    "temp_condition"     : get_temp_condition(temp) if temp else None,
+                    "humidity"           : humidity,
+                    "humidity_condition" : get_humidity_condition(humidity) if humidity else None,
+                    "wind_speed"         : wind
+                }
             }
-        }
 
-    return {"error": f"No station found for {city_name}"}
+        return {"error": "No station found nearby"}
+
+    except Exception as e:
+        return {"error": str(e)}
 
 @app.get("/pollution/{city_name}")
 async def get_city_pollution(city_name: str):
