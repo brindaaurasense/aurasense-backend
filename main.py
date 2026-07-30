@@ -8,6 +8,10 @@ import requests
 import httpx
 import asyncio
 
+from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession
+from sqlalchemy.orm import sessionmaker, declarative_base
+from sqlalchemy import Column, Integer, String, Boolean, DateTime
+
 app = FastAPI(
     title       = "AuraSense API",
     description = "Live pollution monitoring for South India",
@@ -22,6 +26,33 @@ app.add_middleware(
 )
 
 WAQI_TOKEN = os.environ.get("WAQI_TOKEN")
+
+DB_HOST     = os.environ.get("DB_HOST")
+DB_PORT     = os.environ.get("DB_PORT")
+DB_NAME     = os.environ.get("DB_NAME")
+DB_USER     = os.environ.get("DB_USER")
+DB_PASSWORD = os.environ.get("DB_PASSWORD")
+
+DATABASE_URL = f"postgresql+asyncpg://{DB_USER}:{DB_PASSWORD}@{DB_HOST}:{DB_PORT}/{DB_NAME}"
+
+engine = create_async_engine(DATABASE_URL, echo=False)
+SessionLocal = sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
+Base = declarative_base()
+
+class User(Base):
+    __tablename__ = "users"
+
+    id                  = Column(Integer, primary_key=True, index=True)
+    email               = Column(String, unique=True, index=True, nullable=False)
+    hashed_password     = Column(String, nullable=False)
+    favorite_cities     = Column(String, default="")
+    pollution_alerts_opt_in = Column(Boolean, default=False)
+    created_at          = Column(DateTime, default=datetime.utcnow)
+
+@app.on_event("startup")
+async def startup():
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
 
 CITIES = [
     # South India
