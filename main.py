@@ -1,29 +1,16 @@
-
 import os
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from contextlib import asynccontextmanager
 
 from datetime import datetime
 import requests
 import httpx
 import asyncio
 
-from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession
-from sqlalchemy.orm import sessionmaker, declarative_base
+from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker
+from sqlalchemy.orm import declarative_base
 from sqlalchemy import Column, Integer, String, Boolean, DateTime
-
-app = FastAPI(
-    title       = "AuraSense API",
-    description = "Live pollution monitoring for South India",
-    version     = "1.0.0"
-)
-
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
 
 WAQI_TOKEN = os.environ.get("WAQI_TOKEN")
 
@@ -36,23 +23,38 @@ DB_PASSWORD = os.environ.get("DB_PASSWORD")
 DATABASE_URL = f"postgresql+asyncpg://{DB_USER}:{DB_PASSWORD}@{DB_HOST}:{DB_PORT}/{DB_NAME}"
 
 engine = create_async_engine(DATABASE_URL, echo=False)
-SessionLocal = sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
+SessionLocal = async_sessionmaker(engine, expire_on_commit=False)
 Base = declarative_base()
 
 class User(Base):
     __tablename__ = "users"
 
-    id                  = Column(Integer, primary_key=True, index=True)
-    email               = Column(String, unique=True, index=True, nullable=False)
-    hashed_password     = Column(String, nullable=False)
-    favorite_cities     = Column(String, default="")
+    id                      = Column(Integer, primary_key=True, index=True)
+    email                   = Column(String, unique=True, index=True, nullable=False)
+    hashed_password         = Column(String, nullable=False)
+    favorite_cities         = Column(String, default="")
     pollution_alerts_opt_in = Column(Boolean, default=False)
-    created_at          = Column(DateTime, default=datetime.utcnow)
+    created_at              = Column(DateTime, default=lambda: datetime.now())
 
-@app.on_event("startup")
-async def startup():
+@asynccontextmanager
+async def lifespan(app: FastAPI):
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
+    yield
+
+app = FastAPI(
+    title       = "AuraSense API",
+    description = "Live pollution monitoring for South India",
+    version     = "1.0.0",
+    lifespan    = lifespan
+)
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 CITIES = [
     # South India
@@ -168,31 +170,30 @@ async def fetch_weather(lat, lon):
             f"https://api.open-meteo.com/v1/forecast"
             f"?latitude={lat}"
             f"&longitude={lon}"
-            f"&current=temperature_2m,relative_humidity_2m,wind_speed_10m"
+            f"&current=temperature_2m,apparent_temperature,relative_humidity_2m,wind_speed_10m"
         )
         async with httpx.AsyncClient() as client:
             response = await client.get(url, timeout=10)
 
-        # Check connection
         if response.status_code != 200:
             print(f"Weather API error: {response.status_code}")
-            return None, None, None
+            return None, None, None, None
 
         data = response.json()
 
-        # Correct way to read Open-Meteo response
         current = data.get("current", {})
         temp = current.get("temperature_2m", None)
+        feels_like = current.get("apparent_temperature", None)
         humidity = current.get("relative_humidity_2m", None)
         wind = current.get("wind_speed_10m", None)
 
-        print(f"Weather fetched: temp={temp}, humidity={humidity}, wind={wind}")
+        print(f"Weather fetched: temp={temp}, feels_like={feels_like}, humidity={humidity}, wind={wind}")
 
-        return temp, wind, humidity
+        return temp, wind, humidity, feels_like
 
     except Exception as e:
         print(f"Weather error: {str(e)}")
-        return None, None, None
+        return None, None, None, None
 
 @app.get("/")
 def home():
@@ -216,7 +217,7 @@ async def get_all_pollution():
     timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     for city in CITIES:
         aqi_value, aqi_condition = await fetch_aqi_waqi(city["waqi_name"])
-        temp, wind, humidity     = await fetch_weather(city["lat"], city["lon"])
+        temp, wind, humidity, feels_like = await fetch_weather(city["lat"], city["lon"])
         city_data = {
             "city" : city["name"],
             "aqi"  : {
@@ -225,6 +226,7 @@ async def get_all_pollution():
             },
             "weather" : {
                 "temperature"        : temp,
+                "feels_like"         : feels_like,
                 "temp_condition"     : get_temp_condition(temp) if temp else None,
                 "humidity"           : humidity,
                 "humidity_condition" : get_humidity_condition(humidity) if humidity else None,
@@ -241,8 +243,7 @@ async def get_all_pollution():
 @app.get("/pollution-by-coords")
 async def get_pollution_by_coords(lat: float, lon: float):
     try:
-        # Run reverse-geocoding and weather fetch AT THE SAME TIME
-        city_name, (temp, wind, humidity) = await asyncio.gather(
+        city_name, (temp, wind, humidity, feels_like) = await asyncio.gather(
             reverse_geocode(lat, lon),
             fetch_weather(lat, lon)
         )
@@ -250,7 +251,6 @@ async def get_pollution_by_coords(lat: float, lon: float):
         if not city_name:
             return {"error": "Could not determine city from location"}
 
-        # Step 1 — Try WAQI search with detected city name
         result = await search_city_waqi(city_name)
         if result:
             aqi_value     = None
@@ -269,6 +269,7 @@ async def get_pollution_by_coords(lat: float, lon: float):
                 },
                 "weather" : {
                     "temperature"        : temp,
+                    "feels_like"         : feels_like,
                     "temp_condition"     : get_temp_condition(temp) if temp else None,
                     "humidity"           : humidity,
                     "humidity_condition" : get_humidity_condition(humidity) if humidity else None,
@@ -276,7 +277,6 @@ async def get_pollution_by_coords(lat: float, lon: float):
                 }
             }
 
-        # Step 2 — Try checking our CITIES list for nearest city
         nearest_city_map = {
             'srivilliputtur' : 'Madurai',
             'srivilliputhur' : 'Madurai',
@@ -316,7 +316,6 @@ async def get_pollution_by_coords(lat: float, lon: float):
 
         nearest = nearest_city_map.get(city_name.lower())
         if nearest:
-            # Find in our CITIES list
             for city in CITIES:
                 if nearest.lower() in city["name"].lower():
                     aqi_value, aqi_condition = await fetch_aqi_waqi(city["waqi_name"])
@@ -328,6 +327,7 @@ async def get_pollution_by_coords(lat: float, lon: float):
                         },
                         "weather" : {
                             "temperature"        : temp,
+                            "feels_like"         : feels_like,
                             "temp_condition"     : get_temp_condition(temp) if temp else None,
                             "humidity"           : humidity,
                             "humidity_condition" : get_humidity_condition(humidity) if humidity else None,
@@ -342,11 +342,10 @@ async def get_pollution_by_coords(lat: float, lon: float):
 
 @app.get("/pollution/{city_name}")
 async def get_city_pollution(city_name: str):
-    # Step 1: Check our fixed list first
     for city in CITIES:
         if city_name.lower() in city["name"].lower():
             aqi_value, aqi_condition = await fetch_aqi_waqi(city["waqi_name"])
-            temp, wind, humidity     = await fetch_weather(city["lat"], city["lon"])
+            temp, wind, humidity, feels_like = await fetch_weather(city["lat"], city["lon"])
             return {
                 "city" : city["name"],
                 "aqi"  : {
@@ -355,6 +354,7 @@ async def get_city_pollution(city_name: str):
                 },
                 "weather" : {
                     "temperature"        : temp,
+                    "feels_like"         : feels_like,
                     "temp_condition"     : get_temp_condition(temp) if temp else None,
                     "humidity"           : humidity,
                     "humidity_condition" : get_humidity_condition(humidity) if humidity else None,
@@ -362,8 +362,6 @@ async def get_city_pollution(city_name: str):
                 }
             }
 
-    # Step 2: Not found in our list — NOW try the backup WAQI search
-    # (this runs only ONCE, after checking every city in the list)
     result = await search_city_waqi(city_name)
     if result:
         aqi_value = None
@@ -375,7 +373,7 @@ async def get_city_pollution(city_name: str):
             except ValueError:
                 pass
 
-        temp, wind, humidity = await fetch_weather(result["lat"], result["lon"])
+        temp, wind, humidity, feels_like = await fetch_weather(result["lat"], result["lon"])
         return {
             "city": result["name"],
             "aqi": {
@@ -384,6 +382,7 @@ async def get_city_pollution(city_name: str):
             },
             "weather": {
                 "temperature": temp,
+                "feels_like": feels_like,
                 "temp_condition": get_temp_condition(temp) if temp else None,
                 "humidity": humidity,
                 "humidity_condition": get_humidity_condition(humidity) if humidity else None,
@@ -391,11 +390,9 @@ async def get_city_pollution(city_name: str):
             }
         }
 
-    # Step 3: Truly nothing found anywhere
     return {"error": f"City '{city_name}' not found"}
 
 @app.get("/test-weather")
-
 def test_weather():
     try:
         url = (
