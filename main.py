@@ -441,6 +441,39 @@ def test_weather():
     except Exception as e:
         return {"error": str(e)}
 
+class AlertUpdateRequest(BaseModel):
+    email: str
+    pollution_alerts_opt_in: bool
+
+@app.post("/update-alerts")
+async def update_alerts(request: AlertUpdateRequest):
+    async with SessionLocal() as session:
+        result = await session.execute(select(User).where(User.email == request.email))
+        user = result.scalar_one_or_none()
+
+        if not user:
+            return {"error": "User not found"}
+
+        user.pollution_alerts_opt_in = request.pollution_alerts_opt_in
+        await session.commit()
+
+        return {"success": True, "pollution_alerts_opt_in": user.pollution_alerts_opt_in}
+
+@app.get("/user-status/{email}")
+async def get_user_status(email: str):
+    async with SessionLocal() as session:
+        result = await session.execute(select(User).where(User.email == email))
+        user = result.scalar_one_or_none()
+
+        if not user:
+            return {"error": "User not found"}
+
+        return {
+            "email": user.email,
+            "pollution_alerts_opt_in": user.pollution_alerts_opt_in,
+            "favorite_cities": user.favorite_cities,
+        }
+
 @app.post("/signup", response_model=TokenResponse)
 async def signup(request: SignupRequest):
     async with SessionLocal() as session:
@@ -471,3 +504,4 @@ async def login(request: LoginRequest):
 
         token = create_access_token(request.email)
         return {"access_token": token, "token_type": "bearer"}
+
