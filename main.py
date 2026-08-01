@@ -1,16 +1,10 @@
-import os
-from fastapi import FastAPI
-from fastapi.middleware.cors import CORSMiddleware
-from contextlib import asynccontextmanager
-
-from datetime import datetime
-import requests
-import httpx
-import asyncio
-
 from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker
 from sqlalchemy.orm import declarative_base
-from sqlalchemy import Column, Integer, String, Boolean, DateTime
+from sqlalchemy import Column, Integer, String, Boolean, DateTime, select
+from passlib.context import CryptContext
+from jose import JWTError, jwt
+from pydantic import BaseModel
+from datetime import timedelta
 
 WAQI_TOKEN = os.environ.get("WAQI_TOKEN")
 
@@ -26,6 +20,12 @@ engine = create_async_engine(DATABASE_URL, echo=False)
 SessionLocal = async_sessionmaker(engine, expire_on_commit=False)
 Base = declarative_base()
 
+pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
+
+SECRET_KEY = os.environ.get("JWT_SECRET_KEY", "aurasense-dev-secret-change-this")
+ALGORITHM = "HS256"
+ACCESS_TOKEN_EXPIRE_MINUTES = 60 * 24 * 30  # 30 days
+
 class User(Base):
     __tablename__ = "users"
 
@@ -35,6 +35,29 @@ class User(Base):
     favorite_cities         = Column(String, default="")
     pollution_alerts_opt_in = Column(Boolean, default=False)
     created_at              = Column(DateTime, default=lambda: datetime.now())
+
+class SignupRequest(BaseModel):
+    email: str
+    password: str
+
+class LoginRequest(BaseModel):
+    email: str
+    password: str
+
+class TokenResponse(BaseModel):
+    access_token: str
+    token_type: str = "bearer"
+
+def hash_password(password: str) -> str:
+    return pwd_context.hash(password)
+
+def verify_password(plain_password: str, hashed_password: str) -> bool:
+    return pwd_context.verify(plain_password, hashed_password)
+
+def create_access_token(email: str) -> str:
+    expire = datetime.now() + timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
+    to_encode = {"sub": email, "exp": expire}
+    return jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -407,3 +430,34 @@ def test_weather():
         return response.json()
     except Exception as e:
         return {"error": str(e)}
+
+@app.post("/signup", response_model=TokenResponse)
+async def signup(request: SignupRequest):
+    async with SessionLocal() as session:
+        result = await session.execute(select(User).where(User.email == request.email))
+        existing_user = result.scalar_one_or_none()
+
+        if existing_user:
+            return {"error": "Email already registered"}
+
+        new_user = User(
+            email=request.email,
+            hashed_password=hash_password(request.password),
+        )
+        session.add(new_user)
+        await session.commit()
+
+        token = create_access_token(request.email)
+        return {"access_token": token, "token_type": "bearer"}
+
+@app.post("/login", response_model=TokenResponse)
+async def login(request: LoginRequest):
+    async with SessionLocal() as session:
+        result = await session.execute(select(User).where(User.email == request.email))
+        user = result.scalar_one_or_none()
+
+        if not user or not verify_password(request.password, user.hashed_password):
+            return {"error": "Invalid email or password"}
+
+        token = create_access_token(request.email)
+        return {"access_token": token, "token_type": "bearer"}
