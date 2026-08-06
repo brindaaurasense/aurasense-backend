@@ -228,6 +228,7 @@ async def fetch_weather(lat, lon):
         print(f"Weather error: {str(e)}")
         return None, None, None, None
 
+@app.head("/")
 @app.get("/")
 def home():
     return {
